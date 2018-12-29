@@ -1,0 +1,607 @@
+#!/usr/bin/perl
+#
+#    名前
+#          csv - ＣＳＶファイル表示
+#
+#    書式
+#          csv [-n][-o offset][-h][-l][-s][-w [width1][,width2]...]
+#              [-d][-c columns] file . . .
+#
+#    説明
+#
+#          csv はコマンドラインで指定された CSV形式のファイルに罫線を付け、
+#
+#          表形式にして標準出力に書き込みます。
+#
+#
+#          入力ファイルを指定しなかった場合、csv は標準入力から読み込みます。
+#
+#          セルの幅は、デフォルトでは同一の列の中で最大の幅をもつセルの値を
+#
+#          採用します。
+#
+#          表が端末のカラム数を超えてしまう場合は、表が乱れるのを防ぐため、
+#
+#          右端が切り捨てられます。
+#
+#          同様に表が乱れるのを防ぐため、EUCコードの半角カナ（２バイト文字だが
+#
+#          フォントは通常、１バイト文字の幅）は全角に変換します。
+#
+#
+#    オプション
+#
+#          -n      左端に列を追加し、連番を表示します。
+#                  連番は１から開始します。
+#                  -sオプションによって表示されない行があっても、番号を
+#                  飛ばすことはしません。
+#
+#          -o      連番を振り始める行を指定します。デフォルトは０です。
+#                  これは、最初の数行がヘッダである場合に有用でしょう。
+#                  -nオプションが指定されていない場合は効果ありません。
+#
+#          -s      値が存在しない行を表示しません。
+#                  つまり、','と改行だけで構成されているような行です。
+#                  空白は、値ありとみなします。
+#
+#          -w [width1][,width2]...
+#                  列ごとのセルの幅を指定します。
+#                  左から順にカンマで区切って指定します。
+#                  ０を指定すると、その行は削除されます。
+#                  ２バイト文字の罫線を使用しているとき、奇数値は強制的に
+#                  ＋１されます。
+#                  ある列だけを指定したい場合は、指定しない列に何も値を
+#                  設定せず、カンマを並べて下さい。
+#                  注意:
+#                    ユーザの指定ではなく、データが存在しないために幅０に
+#                    決定された列は、非常に狭い列として表示されます。
+#
+#          -d      データから求めたセルの幅を表示します。
+#                  -nオプションによる、連番の列の幅は含みません。
+#
+#          -h      横罫線を表示しません。
+#
+#          -l      罫線の形式を変更します。
+#
+#          -c columns
+#                  カラム数を指定します。この値は右端の切り捨て処理に使用
+#                  されます。
+#                  ０を指定すると無限大として扱います。つまり、切り捨てを
+#                  行いません。
+#
+#          -b character
+#                  表の空白部分に出力する背景文字を指定します。
+#                  デフォルトは' '（空白）です。
+#
+#    設定
+#          このスクリプト自体にユーザ設定の記述部があり、いくつかの設定を
+#          変更することができます（罫線に使用する文字など）。
+#
+#
+#    注意
+#          日本語処理は、EUCコードであることを前提にしています。
+#          端末が使用するフォントによっては、表示がずれることがあります。
+#
+#    バグ
+#          スクリーンの右端と列の右端が接するとき、末尾の縦罫線が表示されず、
+#          列が少しだけ広々とします。
+#
+#    参考
+#          本スクリプトでは、日本語処理のために utashiro氏によるスクリプト
+#          jcode.plを利用しております。
+#
+#          また、CSV形式のファイルから値を取り出す処理やEUCコードの処理は、
+#          OHZAKI Hiroki氏のWEBサイトを参考にさせて頂きました。
+#          有用な技術情報を公開されている氏に感謝いたします。
+#          URI: http://www.din.or.jp/~ohzaki/perl.htm
+#
+#    著者
+#          Tokikazu Ohya <ohya@art.plala.or.jp>
+#
+#    履歴
+#          V0.1 --- 1999/03/05  非公開
+#
+#          V1.0 --- 2006/05/29  アルゴリズムを全面改良
+#
+
+##############################################################################
+#
+# ユーザ設定
+#
+##############################################################################
+
+# -----------------------------------------------------------------------------
+# プリファレンス
+#
+
+my $ColsMethod     = 2;    # スクリーンのカラム数を求める方法の選択
+                           #  0: ユーザ設定
+                           #  1: ioctl
+                           #  2: tputコマンド
+                           #  3: 環境変数"COLUMNS"の値
+my $Columns        = 80;   # スクリーンサイズ(ColsMethod=0の時に使用)
+my $HorizontalLine = 1;    # 横罫線を描画する
+my $BgChar         = ' ';  # 背景文字(１バイト)
+my $LineType       = 0;    # 罫線タイプを示すプール値(0 or 1)
+my $EUC            = 0;    # EUCコード用の特殊処理を行う(jcode.plを使います)
+
+# -----------------------------------------------------------------------------
+# 罫線定義
+#
+#  定義は２つのみ有効です
+
+%RuledLines0 = (
+  size      => 1,
+  top       => [ "+", "-", "-", "+" ],
+  middle    => [ "+", "-", "+", "+" ],
+  bottom    => [ "+", "-", "-", "+" ],
+  separator => "|"
+);
+
+%RuledLines1 = (
+  size      => 1,
+  top       => [ "┌", "─", "┬", "┐" ],
+  middle    => [ "├", "─", "┼", "┤" ],
+  bottom    => [ "└", "─", "┴", "┘" ],
+  separator => "│"
+);
+
+@RuledLines = ( \%RuledLines0, \%RuledLines1 );
+
+###############################################################################
+# 以下、編集禁止
+
+# -----------------------------------------------------------------------------
+# オプション取得
+#
+
+use Getopt::Std;
+
+&print_usage unless (getopts('no:hsw:c:db:l'));
+
+$HorizontalLine = 0 if $opt_h;  # 横罫線非表示
+$Supress        = $opt_s;       # 空行のサプレス
+$WidthDisplay   = $opt_d;       # セル幅表示
+
+# シリアル番号
+if (defined $opt_n) {
+  # -oオプションの値が０以上の数字でなければエラー
+  &print_usage if ($opt_o =~ /[^\d]/ || $opt_o < 0);
+  $Number = 1;
+  $Offset = $opt_o;
+}
+
+# セル幅セット
+if (defined $opt_w) {
+  # 数字、カンマ以外の文字が含まれていたらエラー
+  &print_usage if ($opt_w =~ /[^\d,]/);
+  $WidthFix = 1;
+}
+
+# カラム数
+if (defined $opt_c) {
+  # 数字以外の文字が含まれていたらエラー
+  &print_usage if ($opt_c =~ /[^\d]/);
+  $Columns = $opt_c;
+}
+
+# 背景文字
+if (defined $opt_b) {
+  # 長さが１以外の時はエラー
+  &print_usage if (length($opt_b) != 1); 
+  $BgChar = substr( $opt_b, 0, 1 );
+}
+
+# 罫線タイプの切り替え
+if (defined $opt_l) {
+  $LineType = ! $LineType;
+}
+
+
+# -----------------------------------------------------------------------------
+# 初期処理
+#
+
+# 罫線データの初期化
+%lines = % { $RuledLines[$LineType] }; # ハッシュ
+$LineWidth = $lines{size};
+@Top       = @ { $lines{top} };
+@Middle    = @ { $lines{middle} };
+@Bottom    = @ { $lines{bottom} };
+$Separator = $lines{separator};
+
+# 日本語処理の準備
+#   EUC特殊処理を行う場合は、jcode.plを利用する
+require 'jcode.pl' if ($EUC);
+
+
+# -----------------------------------------------------------------------------
+# ウィンドウのカラム数取得
+#
+unless (defined $opt_c) {
+
+  if ($ColsMethod == 0) {
+    # use user setting as above
+  }
+  elsif ($ColsMethod == 1) {
+    require 'sys/ioctl.ph';
+    die "no TIOCGWINSZ " unless defined &TIOCGWINSZ;
+    open(TTY, "+</dev/tty") or die "No tty: $!";
+    unless (ioctl(TTY, &TIOCGWINSZ, $winsize='')) {
+      die sprintf "$0: ioctl TIOCGWINSZ (%08x: $!)\n", &TIOCGWINSZ;
+    }
+    ($row, $col, $xpixel, $ypixel) = unpack('S4', $winsize);
+    $Cols = $col;
+  }
+  elsif ($ColsMethod == 2) {
+    $Cols = `tput cols`;
+    chop $Cols;
+  }
+  else {
+    $Cols = $ENV{"COLUMNS"};
+  }
+
+  $Columns = $Cols if ($Cols);
+}
+
+$Columns-- if ($Columns % $LineWidth == 1);
+
+# -----------------------------------------------------------------------------
+# データ解析
+#
+
+#
+# 配列に格納
+#
+while (my $line = <>) {
+  # double quotesに囲まれた改行がある場合（"が奇数個）は、次の行をつなげる
+  $line .= <> while ($line =~ tr/"// % 2 and !eof);
+
+  # 改行コードを、このホストのコードに統一する
+  $line =~ s/\x0D\x0A/\n/g;
+  $line =~ tr/\x0D\x0A/\n\n/;
+
+  # データが無く、かつサプレスONの場合は無視する
+  next unless ($line =~ /[^,\n]/ || !$Supress);
+
+  # 改行を削除し、末尾にcommaを付加
+  $line =~ s/(?:\n)?$/,/;
+
+  if ($EUC) {
+    if ($line =~ /\x8E/) {
+      # 半角カタカナを全角カタカナに変換する
+      jcode::h2z_euc(\$line);
+    }
+  }
+
+  # 各フィールドから値を取り出す
+  @values = map {/^"(.*)"$/s ? scalar($_ = $1, s/""/"/g, $_) : $_}
+                ($line =~ /("[^"]*(?:""[^"]*)*"|[^,]*),/g);
+
+  push @database, [ @values ];
+}
+
+exit 0 if (@database == 0);
+
+#
+# セル幅の決定
+#
+
+# 含まれているデータから求める
+for $row (@database) {
+
+  $count = @$row;
+  $field_cnt = $count  if ($count > $field_cnt);
+
+  for ($i = 0; $i < $count; $i++) {
+    $len = &width_of_cell($$row[$i]);
+    $space[$i] = $len  if ($len >= $space[$i]);
+      # 条件に'='がないと、０の場合は代入されずに未定義のままとなってしまう
+      # -> 下のセル幅の表示処理で表示されない
+  }
+}
+
+# セル幅の表示
+if ($WidthDisplay) {
+  print "-w ";
+  print join ',', @space;
+  print "\n";
+}
+
+# オプションで指定された幅の値で、求めた値を上書きする
+if ($WidthFix == 1) {
+  my @work = split( /,/, $opt_w );
+  my $i = 0;
+  my $deleted = 0;
+
+  # 各フィールド幅指定を処理する
+  foreach (@work) {
+    # 値が存在する場合は上書き
+    if ($_) {
+      $_++  if ($_ % $LineWidth == 1);
+      $space[$i] = $_;
+      $i++;
+    }
+
+    # 値が０の場合は非表示
+    elsif ($_ eq '0') {
+      # データから指定列を削除
+      for $row (@database) {
+        splice (@$row, $i, 1);
+      }
+      # 幅データから指定列を削除
+      splice (@space, $i, 1);
+      $field_cnt--;
+      $deleted = 1;
+    }
+
+    # 非表示処理をしなかった場合は、インデックスを進める
+    # 処理をした場合は、削除した分だけデータが前に移動するので必要ない
+    else {
+      $i++;
+    }
+  }
+
+  # 表示すべきデータがなくなった場合は終了
+  exit 0 unless (@space);
+
+  # 列が削除されたことによる、空行の削除(サプレスONの場合)
+  if ($deleted && $Supress) {
+
+REBUILD:
+    $i = 0;
+    for $row (@database) {
+      $is = 0;
+      for $cell (@$row) {
+        if ($cell) {
+          $is = 1;
+          last;
+        }
+      } 
+
+      unless ($is) {
+        splice (@database, $i, 1);
+        goto REBUILD;
+      }
+      $i++;
+    }
+
+    # 表示すべきデータがなくなった場合は終了
+    exit 0 unless (@database);
+  }
+}
+
+# 連番を付加する
+if ($Number) {
+  my $i = 0;
+  my $n = 1;
+  my $cnt = @database;
+
+  $field_cnt++;
+
+  $len = length(@database);
+  $len++  if ($len % $LineWidth == 1);
+  @space = ( $len, @space );
+
+  for ($i = 0; $i < $cnt; $i++) {
+    $row = $database[$i];
+    if ($i < $Offset) {
+      unshift @$row, undef;
+    }
+    else {
+      unshift @$row, $n++;
+    }
+  }
+}
+
+# 端末のスクリーンサイズからはみ出る場合は調整する
+if ($Columns != 0) {
+  my $width = $LineWidth;
+  my $n = @space;
+
+  for ($i = 0; $i < $n; $i++) {
+    if ($width + $LineWidth + $space[$i] >= $Columns) {
+      $space[$i] = $Columns - $width;
+      $field_cnt = $i + 1;
+      $Trimming = 1;
+      last;
+    }
+    $width += $LineWidth + $space[$i];
+  }
+}
+
+
+# -----------------------------------------------------------------------------
+# データ出力
+#
+
+# トップ罫線
+&print_line( @Top );
+
+# データ １行目
+$row = shift @database;
+&print_data( @$row );
+
+# データ ２行目以降
+for $row (@database) {
+  if ($HorizontalLine) {
+    &print_line( @Middle );
+  }
+  &print_data( @$row );
+}
+
+# ボトム罫線
+&print_line( @Bottom );
+
+exit 0;
+
+
+##############################################################################
+#
+# サブルーチン定義
+#
+##############################################################################
+
+# -----------------------------------------------------------------------------
+# セル幅取得
+sub width_of_cell {
+  my $len = 0;
+  my @multi = split( /\n/, @_[0] );
+
+  foreach (@multi) {
+    $len = length if (length > $len);
+    $len++  if ($len % $LineWidth == 1);
+  }
+
+  return $len;
+}
+
+# -----------------------------------------------------------------------------
+# 罫線（上端／下端）出力
+sub print_line {
+  ( $left, $mid, $mid_sep, $right ) = @_;
+
+  # 先頭の罫線
+  print $left;
+
+  # 各セルをカバーする横罫線（末尾セルを除く）
+  for ($i = 0; $i < $field_cnt - 1; $i++) {
+    print $mid x ($space[$i] / $LineWidth);
+    print $mid_sep;
+  }
+
+  # 末尾のセルをカバーする横罫線
+  for ($j = 0; $j < $space[$i] / $LineWidth; $j++) {
+    print $mid;
+  }
+
+  # 末尾の罫線
+  print $right unless ($Trimming);
+
+  print "\n";
+}
+
+# -----------------------------------------------------------------------------
+# １データ行出力(複数行含む可能性がある)
+sub print_data {
+  #
+  # 改行を含むデータがない場合
+  #
+  unless (grep /\n/, @_) {
+    # そのまま表示して呼び出し元に戻る
+    &print_out( @_ );
+    return;
+  }
+
+  #
+  # 改行を含むデータがある場合
+  #
+
+  # 各セルを改行で分割したリストにし、２次元配列に格納
+  my @expand;
+  map { push @expand, [ split /\n/ ] } @_;
+
+  # 配列中のリストから、先頭の値を抜き出したものを１次元配列に入れて、
+  # データ表示サブルーチンを呼び出す
+  # これを、全ての値が抜き取られるまで行う
+  do {
+    $remain = 0;
+    for $cell (@expand) {
+      $line = shift @$cell;
+      push @row, $line;
+      $remain = 1 if ($#{$cell} >= 0);
+    }
+    &print_out( @row );
+    @row = ();
+  } while ($remain);
+}
+
+# -----------------------------------------------------------------------------
+# １表示行出力
+sub print_out {
+  my @strings = @_;
+  my $i = 0;
+  my $len;
+
+  # 各フィールドを処理
+  while ($i < $field_cnt) {
+
+    # セパレータ
+    print $Separator;
+
+    # 表示データと長さを求める
+    $string = shift @strings;
+    $len = length $string;
+
+    # セルからはみ出る場合
+    if ($len > $space[$i]) {
+      # セルにおさまる長さの部分文字列を取り出す
+      $_ = &shortendstr( $string, $space[$i] );
+
+      # 長さを求め直す
+      $len = length;
+
+      print;
+    }
+
+    # すべて表示できる場合
+    else {
+      print $string;
+    }
+
+    # セルの余白を背景文字で埋める
+    print $BgChar x ($space[$i] - $len);
+
+    $i++;
+  }
+
+  print $Separator unless ($Trimming);
+
+  print "\n";
+}
+
+# -----------------------------------------------------------------------------
+# 部分文字列取得
+sub shortendstr {
+  my $string;
+  my $length;
+
+  ($string, $length) = @_;
+
+  $_ = substr( $string, 0, $length );
+
+  # EUC-JP用の処理
+  if ($EUC) {
+    # ２バイト文字が途切れていたら、末尾バイトを切り落とす
+    chop if (/\x8F$/ or tr/\x8E\xA1-\xFE// % 2);
+  }
+
+  return $_;
+}
+
+# -----------------------------------------------------------------------------
+# ヘルプ出力
+sub print_usage {
+  print <<END_OF_USAGE;
+Usage: csv [OPTION] [FILE ] ...
+
+  -n    insert a column that shows sequence number at left side.
+
+  -o offset
+        offset of first sequence number's row.
+
+  -h    do not draw horizontal ruled lines.
+
+  -s    do not display blank lines.
+
+  -w [width1][,width2]...
+        set width of each columns.
+
+  -d    show width of each columns.
+
+  -c columns
+        set screen size.
+
+END_OF_USAGE
+  exit 1;
+}
