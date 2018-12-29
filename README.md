@@ -3,7 +3,7 @@ This script prints a comma-separated file in table format on terminal.
 
 ### Example
 
-![Example1](img/example1.gif)1
+![Example1](img/example1.gif)
 
 The csv format input file contains the 1990 F1 World Championship calendar and its results.
 The data is as follows.
