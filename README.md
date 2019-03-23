@@ -1,6 +1,14 @@
 # csv
 This script prints a comma-separated file in table format on terminal.
 
+## Installation
+
+```bash
+$ curl -o csv -fsSL https://raw.githubusercontent.com/sgrastar24/csv/master/csv
+$ chmod +x csv
+$ mv csv /usr/local/bin
+```
+
 ### Example
 
 ![Example1](img/example1.gif)
